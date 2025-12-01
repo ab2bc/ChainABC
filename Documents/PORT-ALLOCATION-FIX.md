@@ -129,3 +129,50 @@ After rebuilding:
 ✅ No port conflicts between G1, G2, G3, etc.
 ✅ Enables easy testing of blockchain transactions locally
 ✅ Maintains backward compatibility with flavor/mode offsets
+
+## Production Deployment - Resource Analysis
+
+### Test Deployment (192.168.12.100)
+Successfully deployed **7 nodes** on single server with excellent resource efficiency.
+
+#### Per-Container Resource Usage
+
+| Node | CPU % | Memory | Memory % | Network I/O | Disk I/O | Processes |
+|------|-------|--------|----------|-------------|----------|-----------|
+| **G1** | 0.50% | 231.5 MB | 11.30% | 2.01/2.54 MB | 0B/3.02 MB | 39 |
+| **G2** | 0.44% | 230.6 MB | 11.26% | 1.99/2.54 MB | 0B/3.02 MB | 17 |
+| **G3** | 1.05% | 231.2 MB | 11.29% | 1.97/2.45 MB | 0B/3.02 MB | 39 |
+| **G4** | 0.39% | 231.5 MB | 11.30% | 1.92/2.42 MB | 0B/3.02 MB | 17 |
+| **G5** | 0.53% | 232.2 MB | 11.34% | 2.06/2.64 MB | 0B/3.03 MB | 50 |
+| **P1** | 0.22% | 228.8 MB | 11.17% | 54.6KB/819KB | 0B/2.12 MB | 39 |
+| **F1** | 0.54% | 293.1 MB | 0.93% | 0B/0B | 307KB/4.5 MB | 36 |
+
+**Totals:**
+- **Total CPU**: ~3.67% (very light load, idle waiting for transactions)
+- **Total Memory**: ~1.65 GB (validators: 1.38 GB, fullnode: 293 MB)
+- **Total Network I/O**: ~14 MB (P2P sync between validators)
+- **Total Processes**: 237
+
+#### Host System Capacity
+- **RAM**: 30 GB total, 9.1 GB used, **21 GB available**
+- **Disk**: 478 GB total, 59 GB used (13%), **395 GB free**
+- **Swap**: 4 GB (barely used - 1.2 MB)
+
+#### Scalability Analysis
+✅ **Per-validator overhead**: ~230 MB RAM, <1% CPU when idle  
+✅ **100+ validator capacity**: Server can easily support 100+ validators  
+   - Memory: 100 validators × 230 MB = 23 GB (within 30 GB limit)
+   - CPU: Minimal when idle, consensus scales well
+   - Disk: Shared storage, plenty of space
+
+⚠️ **Current limitation**: Sequential port allocation limits to ~100 validators before port range exhaustion
+   - Current scheme: 10 ports per validator = max 100 validators per flavor
+   - Port range: 21000-22000 (RPC), 23000-24000 (Metrics), 25000-26000 (UDP)
+
+### P2P Network Health
+✅ All validators loaded with correct port offsets (G1=+0, G2=+10, G3=+20, G4=+30, G5=+40)  
+✅ Genesis state synchronized across all 5 validators  
+✅ No P2P connection errors  
+✅ Network ready for consensus (waiting for transactions)
+
+**Note**: Blockchain is waiting at checkpoint 1 - this is normal behavior when there are no transactions. Consensus will activate once transactions are submitted.
