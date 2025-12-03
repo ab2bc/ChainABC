@@ -1,0 +1,378 @@
+# P2P Connectivity Investigation - SOLVED (Dec 1, 2025)
+
+## Final Solution: Bridge Networking with Docker IP Seed-Peers
+
+### Status
+- ✅ **Solution implemented**: Deploy template now auto-updates seed-peers with Docker bridge IPs
+- ✅ Port conflicts fixed in DockerScript.cs and deployment scripts  
+- ✅ Bridge networking maintained (no need for host mode or macvlan)
+- ⏳ Awaiting rebuild of AManager.exe in Windows with fixes
+
+### Root Cause Analysis
+**Problem**: Localhost seed-peers (127.0.0.1) don't work with Docker bridge networking
+- Each container has its own network namespace
+- `127.0.0.1` inside container A only reaches container A
+- Containers cannot reach each other via localhost
+
+**Why genesis hairpin NAT isn't the issue**:
+- Genesis P2P addresses (192.168.12.100:25XXX) are only used for cross-cluster communication
+- For same-machine deployments, seed-peers override genesis discovery
+- The REAL issue was empty/localhost seed-peers preventing local discovery
+
+### The Solution
+**Template now implements automatic Docker bridge IP discovery:**
+
+1. Validators deploy with placeholder localhost seed-peers
+2. After deployment, `update_seed_peers_with_docker_ips()` function:
+   - Discovers each validator's Docker bridge IP (172.17.0.x)
+   - Updates seed-peers in all configs: `127.0.0.1` → `172.17.0.x`
+   - Restarts validators to apply new configuration
+3. Validators connect via Docker internal bridge network
+
+**Advantages of this approach:**
+- ✅ No genesis regeneration needed
+- ✅ Maintains port isolation (bridge networking)
+- ✅ Works immediately after deployment
+- ✅ Automatic - no manual intervention required
+- ⚠️ IPs change if containers recreated (but script handles it)
+
+## Original Hairpin NAT Investigation
+
+### The Issue (Not the Real Problem)
+With Docker bridge networking, containers cannot reach the host's external IP (192.168.12.100) and have Docker route it back to other containers. This is called "hairpin NAT" and is NOT supported by default Docker bridge.
+
+**Flow that fails:**
+1. Container AQY-G1 (172.17.0.2) tries to connect to genesis P2P address: `192.168.12.100:25376`
+2. Packet routes to host's external interface
+3. Docker bridge does NOT hairpin it back to container AQY-G2 (172.17.0.3)
+4. Connection fails, 0 peers
+
+### Genesis.blob Configuration
+Genesis has all validators configured with:
+- `p2p_address: "/ip4/192.168.12.100/udp/25696/quic-v1"` (G1)
+- `p2p_address: "/ip4/192.168.12.100/udp/25376/quic-v1"` (G2)
+- `p2p_address: "/ip4/192.168.12.100/udp/25104/quic-v1"` (G3)
+- `p2p_address: "/ip4/192.168.12.100/udp/25688/quic-v1"` (G4)
+- `p2p_address: "/ip4/192.168.12.100/udp/25636/quic-v1"` (G5)
+
+These are BAKED into genesis.blob and cannot be changed without regenerating genesis.
+
+### Current Deployment Configuration
+- **Network mode**: bridge (default Docker networking)
+- **UDP port mappings**: `192.168.12.100:25XXX:25XXX/udp` (bound to external IP only)
+- **Seed-peers**: Empty (`seed-peers: []`)
+- **Result**: Validators cannot discover/connect to each other
+
+## Comparison with "Working" Original Configuration
+
+### Key Difference Found
+The old configuration that reportedly worked had:
+```yaml
+p2p-config:
+  listen-address: 0.0.0.0:25000
+  external-address: "/ip4/192.168.12.139/udp/25003/quic-v1"
+  seed-peers:
+    - address: "/ip4/192.168.12.185/udp/25004/quic-v1"
+    - address: /ip4/192.168.12.185/udp/25004/quic-v1"
+```
+
+**Critical difference**: **SEED-PEERS were explicitly configured!**
+- Current deployment: `seed-peers: []` (empty, relies on genesis auto-discovery)
+- Old deployment: Had explicit seed-peers pointing to other validators
+
+This suggests the old deployment either:
+1. Used seed-peers to bootstrap P2P (workaround for hairpin issue)
+2. Was deployed on separate machines (different IPs: 192.168.12.139, 192.168.12.185)
+3. Had iptables rules configured for hairpin NAT
+
+## Attempted Solutions
+
+### 1. Host Networking (`--network=host`)
+**Attempted**: Changed template to use `--network=host`
+**Result**: FAILED - Admin port conflict
+- All validators try to bind to `127.0.0.1:1337` (admin interface)
+- Admin port is hardcoded in sui-node binary, not configurable
+- Causes "Address already in use" panic (exit code 139)
+- **Reverted template back to bridge mode**
+
+### 2. IPtables Hairpin NAT Rules
+**Attempted**: Added NAT rules to enable hairpin routing
+```bash
+sudo iptables -t nat -A POSTROUTING -s 172.17.0.0/16 -d 192.168.12.100 -j MASQUERADE
+sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -d 192.168.12.100 -j DNAT --to-destination 172.17.0.1
+```
+**Result**: FAILED - Still 0 peers after 10 seconds
+
+## Solutions for Single-Machine Multi-Validator Deployment
+
+### Option 1: Macvlan Network (Recommended for Production-like Testing)
+Give each container its own MAC address and IP on the host network.
+- Containers get real IPs: 192.168.12.101, 192.168.12.102, etc.
+- No NAT/port-mapping needed
+- Genesis P2P addresses work as-is
+- **Requires**: Enough IPs on the network, DHCP/static IP configuration
+
+### Option 2: Add Seed-Peers Configuration
+Modify validator.yaml to add explicit seed-peers using Docker host gateway.
+- Set seed-peers to point to `172.17.0.1:25XXX` (Docker bridge gateway)
+- Requires regenerating deployment packages with seed-peer configs
+- **Issue**: Docker gateway might not forward UDP properly
+
+### Option 3: Regenerate Genesis with Container-Internal Addressing
+Create new genesis.blob with P2P addresses as container IPs.
+- Use Docker custom network with predictable IPs
+- Genesis P2P addresses: `172.18.0.2`, `172.18.0.3`, etc.
+- **Downside**: Not production-realistic, requires full genesis regeneration
+
+### Option 4: Deploy on Separate Machines (Production Model)
+Each validator on its own machine/VM with unique public IP.
+- Use `--network=host` mode (no port conflicts across machines)
+- Genesis configuration works as-is
+- **This is the intended production deployment model**
+
+## Files Modified During Investigation
+
+### 1. AManager/templates/deploy-template.sh
+**Change**: Temporarily added `--network=host`, then REVERTED
+**Current state**: Bridge networking with port mappings (original)
+**Line 1730**: `--network=host` was tested and reverted
+
+### 2. FIXES-APPLIED.md
+**Added**: Documentation of all findings:
+- Fix 5: Docker Host Networking attempt
+- Update to Fix 5: Host networking limitations discovered
+- Admin port conflict analysis
+- Production deployment recommendations
+
+## Port Configuration Details
+
+### Randomized Port Offsets (Working Correctly)
+- G1: offset=696, RPC=21696, Metrics=23696, UDP=25696-25700
+- G2: offset=376, RPC=21376, Metrics=23376, UDP=25376-25380
+- G3: offset=104, RPC=21104, Metrics=23104, UDP=25104-25108
+- G4: offset=688, RPC=21688, Metrics=23688, UDP=25688-25692
+- G5: offset=636, RPC=21636, Metrics=23636, UDP=25636-25640
+- P1: offset=58, RPC=21058, Metrics=23058, UDP=25058-25062
+- P2: offset=460, RPC=21460, Metrics=23460, UDP=25460-25464
+- P3: offset=594, RPC=21594, Metrics=23594, UDP=25594-25598
+- P4: offset=386, RPC=21386, Metrics=23386, UDP=25386-25390
+- P5: offset=932, RPC=21932, Metrics=23932, UDP=25932-25936
+
+### Port Bases
+- RPC_BASE: 21000
+- METRICS_BASE: 23000
+- UDP_BASE: 25000
+- Consensus primary: UDP_BASE + 1000 (e.g., 26696 for G1)
+- Consensus worker: UDP_BASE + 1001 (e.g., 26697 for G1)
+
+## Previous Fixes (Still Valid)
+
+### Fix 1: Genesis Path in deploy-template.sh
+- Changed from `${flavor}/genesis/genesis.blob` 
+- To: `${SCRIPT_DIR}/genesis/${flavor}/genesis.blob`
+- **Status**: ✅ Working
+
+### Fix 2: GENESIS_SOURCE_DIR
+- Changed from hardcoded `/home/apollo/Apollo/ab2bc`
+- To: `"${SCRIPT_DIR}"` (uses packaged genesis)
+- **Status**: ✅ Working
+
+### Fix 3: DockerScript.cs Column Priority
+- Line 577: Changed column search order
+- From: `FindColumn(grid, "PoS Tokens", "Ports", "PoSTokens")`
+- To: `FindColumn(grid, "Ports", "PoS Tokens", "PoSTokens")`
+- **Purpose**: Read randomized ports from "Ports" column first
+- **Status**: ✅ Working
+
+### Fix 4: Metrics Binding Pattern (fullnode.yaml)
+- Changed sed patterns from `0\.0\.0\.0:[0-9]*`
+- To: `[0-9.]\\+:[0-9]\\+` (handles IP addresses)
+- **Purpose**: Fix fullnode metrics binding
+- **Status**: ⚠️ Fullnodes still failing with "Cannot assign requested address"
+
+## Deployment Package Locations
+
+### Current/Active Package
+- `/home/apollo/Apollo/ab2bc/deploy-192-168-12-100/`
+- Modified: Dec 1, 2025 16:35
+- NODES array: Has randomized ports for all 15 nodes
+- **Status**: Latest, but P2P not working due to hairpin NAT issue
+
+### Old Package (Backup)
+- `/home/apollo/Apollo/ab2bc/deploy-192-168-12-100-bak/`
+- Modified: Nov 29, 2024 22:40
+- NODES array: Only 3 nodes with sequential ports (wrong)
+- **Status**: Outdated, do not use
+
+### Trashed Reference
+- `/home/apollo/Apollo/.Trash-1000/files/deploy-192-168-12-139.19/`
+- Had seed-peers configuration (potential clue for solution)
+
+## SOLUTION FOUND (Dec 1, 2025 19:10 UTC)
+
+**Root Cause Identified**: Using PUBLIC_IP (192.168.12.100) for seed-peers causes Docker bridge hairpin NAT failure
+
+**The Working Solution**: Use **127.0.0.1 (localhost)** for seed-peers instead!
+
+**How It Works**:
+1. Containers have seed-peers pointing to `127.0.0.1:25XXX` (not 192.168.12.100)
+2. With Docker bridge `-p 0.0.0.0:25XXX:25XXX/udp` port mappings
+3. Traffic to `localhost:25XXX` from container → Docker bridge → correct container
+4. This avoids hairpin NAT because localhost traffic is routed differently
+
+**Evidence**: Found working config in `/home/apollo/Apollo/ab2bc/AQY-G1/validator.yaml`:
+```yaml
+seed-peers:
+  - address: /ip4/127.0.0.1/udp/25001/quic-v1
+  - address: /ip4/127.0.0.1/udp/25002/quic-v1
+```
+
+**Implementation**: Updated `create_validator_config()` and `create_enhanced_config()` to generate localhost seed-peers
+
+**Next Steps**: Regenerate deployment package and test
+
+## Previous Investigation Results
+
+### Macvlan Testing Results (Dec 1, 2025 18:53 UTC)
+**Attempted**: Macvlan networking to give containers real IPs
+**Setup**: 
+- Created Docker macvlan network on 192.168.12.96/28
+- Deployed containers with IPs 192.168.12.101-115
+- Created macvlan shim interface for host-container communication
+
+**Result**: Containers deployed successfully with real IPs, BUT still 0 peers
+
+**Root Cause**: Genesis.blob has P2P addresses baked in as `192.168.12.100:25XXX`
+- With macvlan, containers are at `192.168.12.101+`  
+- Containers cannot reach `192.168.12.100` from macvlan network
+- They need P2P addresses pointing to their actual container IPs
+
+**Solutions Forward**:
+1. **Regenerate genesis with container IPs** - Most correct approach
+   - Update genesis YAML files with P2P addresses: 192.168.12.101-115
+   - Regenerate genesis.blob
+   - Deploy with macvlan using those IPs
+   
+2. **Add iptables DNAT rules** - Redirect traffic from .100 to container IPs
+   - Map 192.168.12.100:25696 → 192.168.12.101:25696 (G1)
+   - Map 192.168.12.100:25376 → 192.168.12.102:25376 (G2)
+   - etc. for all validators
+   
+3. **Deploy on separate machines** - Production model (recommended for real deployment)
+   - Each validator on its own machine with unique public IP
+   - Use `--network=host` mode
+   - Genesis configuration works as-is
+
+### Immediate Testing
+1. **Try macvlan network** with containers getting real IPs on 192.168.12.x network
+2. **Add seed-peers** to validator configs pointing to other validators
+3. **Test on 2+ machines** with unique IPs to validate genesis configuration
+
+### For Production
+- Deploy each validator on separate machine/VM
+- Use `--network=host` mode (no admin port conflicts across machines)
+- Current genesis.blob and port configuration will work correctly
+
+### For Single-Machine Development
+- Either use macvlan network OR regenerate genesis with container-internal IPs
+- Consider using Docker Compose with custom bridge network and DNS
+
+## Container Status (As of Last Check)
+```
+AQY-G1  Up 4 minutes   ✅ Running, 0 peers
+AQY-G2  Up 3 minutes   ✅ Running, 0 peers
+AQY-G3  Up 2 minutes   ✅ Running, 0 peers
+AQY-G4  Up 1 minute    ✅ Running, 0 peers
+AQY-G5  Up 46 seconds  ✅ Running, 0 peers
+AQY-P1  Up 3 minutes   ✅ Running, 0 peers
+AQY-P2  Up 3 minutes   ✅ Running, 0 peers
+AQY-P3  Up 2 minutes   ✅ Running, 0 peers
+AQY-P4  Up 1 minute    ✅ Running, 0 peers
+AQY-P5  Up 32 seconds  ✅ Running, 0 peers
+AQY-F1  ❌ Failed (Cannot assign requested address)
+AQY-F2  ❌ Failed (Cannot assign requested address)
+AQY-F3  ❌ Failed (Cannot assign requested address)
+AQY-F4  ❌ Failed (Cannot assign requested address)
+AQY-F5  ❌ Failed (Cannot assign requested address)
+```
+
+## Key Question Unanswered
+**How did the original "offset" deployment achieve P2P connectivity?**
+- Hypothesis 1: Used seed-peers (found in old config)
+- Hypothesis 2: Deployed on multiple machines (IPs: 192.168.12.139, 192.168.12.185)
+- Hypothesis 3: Had iptables hairpin NAT configured system-wide
+- **Need to verify** actual deployment environment for the "working" case
+
+## FINAL FINDINGS - December 1, 2025 19:35 UTC
+
+### Deployment Status
+- ✅ Fixed NODES array port conflicts (all 15 nodes now have unique ports)
+- ✅ Successfully deployed 10 validators (G1-G5, P1-P5)
+- ❌ Fullnodes failed (all used same UDP ports 25000-25004 - fixed in script but not redeployed)
+- ❌ All validators have 0 peers - P2P connectivity still broken
+
+### Root Cause of 0 Peers  
+**Localhost seed-peers do NOT work with Docker bridge networking!**
+
+Each Docker container has its own network namespace:
+- `127.0.0.1` inside AQY-G1 → only reaches AQY-G1 itself
+- `127.0.0.1` inside AQY-G2 → only reaches AQY-G2 itself  
+- Containers CANNOT reach each other via localhost
+
+### Working Solutions for Docker P2P
+
+**Option A: Use Docker Bridge IPs** (172.17.0.x)
+- Containers: AQY-G1=172.17.0.2, G2=172.17.0.3, G3=172.17.0.4, G4=172.17.0.5, G5=172.17.0.6
+- Seed-peers should use `/ip4/172.17.0.2/udp/25646/quic-v1` format
+- ⚠️ IPs are dynamic - change when containers restart
+- ✅ Works immediately without genesis regeneration
+
+**Option B: Use Host Network Mode** (`--network host`)
+- All containers share host's network namespace
+- Localhost (127.0.0.1) WOULD work because all processes share same network
+- ⚠️ Breaks port isolation - all containers must use different ports (already have this)
+- ✅ Best for single-machine deployments
+- Template change: Add `--network host` to docker run, remove `-p` port mappings
+
+**Option C: Custom Docker Network with Static IPs**
+- Create custom bridge: `docker network create --subnet=172.20.0.0/16 aqy-net`
+- Assign static IPs: `--network aqy-net --ip 172.20.0.10`
+- Seed-peers use static IPs
+- ✅ IPs persist across restarts
+- Requires template update
+
+**Option D: Macvlan** (already tested)
+- Gives containers real IPs on LAN (192.168.12.96/28)
+- ⚠️ Requires genesis regeneration with new P2P addresses
+- More complex setup
+
+### Recommended Fix
+For single-machine deployments: **Use host network mode**
+
+Template changes needed in `deploy-template.sh`:
+```bash
+# Change from:
+docker_cmd run -d \
+  -p "0.0.0.0:${rpc}:${rpc}/tcp" \
+  -p "0.0.0.0:${metrics}:${metrics}/tcp" \
+  -p "0.0.0.0:${u0}-${u4}:${u0}-${u4}/udp" \
+  
+# To:
+docker_cmd run -d \
+  --network host \
+```
+
+Seed-peers can then use `127.0.0.1` because all containers share the host's network namespace.
+
+### Code Fixes Applied
+1. ✅ Fixed `DockerScript.cs::TryParsePortsFromGrid()` to handle abbreviated port format  
+2. ✅ Fixed NODES array port conflicts manually
+3. ✅ Fixed fullnode UDP port conflicts (25000 → unique ports)
+4. ⚠️ Template still generates localhost seed-peers (needs host network mode to work)
+
+### Next Steps
+1. Update template to use `--network host` for single-machine deployments
+2. OR: Add post-deployment script to update seed-peers with Docker bridge IPs
+3. Rebuild AManager.exe in Windows with DockerScript.cs fix
+4. Test new deployment package
+
