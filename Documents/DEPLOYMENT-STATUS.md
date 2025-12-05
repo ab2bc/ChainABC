@@ -150,23 +150,117 @@ curl -s http://127.0.0.1:21130 -X POST \
 
 The network is **ready for blockchain transactions**:
 
-- ✅ Consensus achieving commits every ~50ms
-- ✅ Checkpoints being created and certified
+- ✅ Consensus achieving commits every ~55ms
+- ✅ Checkpoints being created and certified (5000+ checkpoints)
 - ✅ JSON-RPC available on fullnodes
-- ✅ All RPC methods available (transfer, stake, publish, etc.)
+- ✅ 5 Genesis validators active with equal voting power (2000 each)
+
+### Tested RPC Methods
+
+| Method | Status | Description |
+|--------|--------|-------------|
+| `suix_getLatestSuiSystemState` | ✅ Works | Full system state with validators |
+| `suix_getReferenceGasPrice` | ✅ Works | Returns 1000 |
+| `suix_getValidatorsApy` | ✅ Works | All 5 validators, 0% APY (epoch 0) |
+| `suix_getCoinMetadata` | ✅ Works | SUI: 9 decimals, symbol "SUI" |
+| `suix_getCommitteeInfo` | ✅ Works | 5 validators in committee |
+| `suix_getOwnedObjects` | ✅ Works | Returns validator caps, staked SUI |
+| `suix_getCoins` | ✅ Works | Query coin balances |
+| `suix_getAllBalances` | ✅ Works | All token balances for address |
 
 ### Example RPC Calls
 
 ```bash
-# Get system state
+# Get reference gas price
 curl -s http://127.0.0.1:21130 -X POST \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getLatestSuiSystemState","params":[]}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getReferenceGasPrice","params":[]}'
+# Returns: {"jsonrpc":"2.0","id":1,"result":"1000"}
+
+# Get validators APY
+curl -s http://127.0.0.1:21130 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getValidatorsApy","params":[]}'
 
 # Get coin metadata
 curl -s http://127.0.0.1:21130 -X POST \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"suix_getCoinMetadata","params":["0x2::sui::SUI"]}'
+
+# Get owned objects for an address
+curl -s http://127.0.0.1:21130 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getOwnedObjects","params":["0x6e7299f6cd18b7250cd080ea07a8e23fe2a09152131627e15274e2f580c7f047",{"filter":null,"options":{"showType":true}},null,10]}'
+
+# Get system state
+curl -s http://127.0.0.1:21130 -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getLatestSuiSystemState","params":[]}'
+```
+
+---
+
+## AB2BC Ecosystem Services
+
+The following services are running and integrated with the AQY blockchain:
+
+### Service Status
+
+| Service | Port | Status | URL |
+|---------|------|--------|-----|
+| 🔧 M2C Backend | 3000 | ✅ Running | http://localhost:3000 |
+| 💻 AB2BC Admin | 3101 | ✅ Running | http://localhost:3101 |
+| 👤 M2C User Site | 3102 | ✅ Running | http://localhost:3102 |
+| 🔐 Genesis Frontend | 3103 | ✅ Running | http://localhost:3103 |
+| 🔑 Genesis API | 3104 | ✅ Running | http://localhost:3104 |
+| 🔍 AB2BC Explorer | 3005 | ✅ Running | http://localhost:3005 |
+| 📱 Red Envelope | 8081 | ✅ Running | http://localhost:8081 |
+| 🛡️ Attack Backend | 4000 | ✅ Running | http://localhost:4000 |
+| 🎯 Attack UI | 3001 | ✅ Running | http://localhost:3001 |
+| 🐘 PostgreSQL | 5432 | ✅ Running | localhost:5432 |
+| 🔴 Redis | 6379 | ✅ Running | localhost:6379 |
+
+### Service Health Checks
+
+```bash
+# Genesis API - Health endpoint
+curl -s http://127.0.0.1:3104/api/health
+# Returns: {"status":"ok","service":"Genesis API Server","timestamp":"..."}
+
+# AB2BC Explorer - Web interface
+curl -s http://127.0.0.1:3005 | head -c 100
+# Returns: HTML with "AB2BC Explorer" title
+
+# Red Envelope Wallet - Web interface  
+curl -s http://127.0.0.1:8081 | head -c 100
+# Returns: HTML with "Red-Envelope-Wallet" title
+```
+
+### Service Descriptions
+
+| Service | Purpose |
+|---------|---------|
+| **M2C Backend** | Main backend API for Move-to-Crypto platform |
+| **AB2BC Admin** | Administrative dashboard for AB2BC ecosystem |
+| **M2C User Site** | User-facing web application for M2C |
+| **Genesis Frontend** | UI for genesis ceremony and validator management |
+| **Genesis API** | Backend API for genesis operations |
+| **AB2BC Explorer** | Multi-chain blockchain explorer for AQY, ASY, AUY, AIY, ARY, AGO, ABC |
+| **Red Envelope** | Red envelope wallet application (gift tokens) |
+| **Attack Backend** | Security testing backend |
+| **Attack UI** | Security testing user interface |
+
+### Startup Command
+
+```bash
+# Start all AB2BC services
+cd ~/RE && ./startup.sh
+
+# Check status
+./startup.sh --status
+
+# Stop all services
+./startup.sh --stop
 ```
 
 ---
