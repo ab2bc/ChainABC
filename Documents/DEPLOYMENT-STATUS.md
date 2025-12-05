@@ -57,6 +57,37 @@ Fullnodes provide JSON-RPC for transaction submission:
 - **Validator Stake**: 20,000,000 AQY each
 - **Total Stake**: 100,000,000 AQY
 
+### ⚠️ CRITICAL: Genesis Generation Method
+
+**MUST use `sui genesis-ceremony`** - Do NOT use `sui genesis`!
+
+| Method | File Size | Hardcoded IPs | Works with Docker Bridge |
+|--------|-----------|---------------|--------------------------|
+| `sui genesis-ceremony` | ~447 KB | ❌ No | ✅ **YES** |
+| `sui genesis` | ~455 KB | ✅ Yes | ❌ **NO** |
+
+**Why `sui genesis` fails:**
+
+1. **Hardcoded P2P Addresses**: `sui genesis` embeds P2P addresses like `/ip4/192.168.12.100/udp/25350/quic-v1` directly into `genesis.blob`
+2. **Docker Bridge Network Issue**: Containers use bridge network (`172.17.0.x`) and cannot reach the external host IP (`192.168.12.100`) from inside
+3. **Symptoms**: All nodes start "healthy", but validators show `"Received no new synced checkpoints for 5s"` and consensus never forms
+4. **Connection Monitor Restarts**: Logs show repeated `connection_monitor: Future ... completed` without block production
+
+**Why `sui genesis-ceremony` works:**
+
+1. **No Hardcoded IPs**: The genesis.blob does NOT contain P2P addresses
+2. **Config-Based Discovery**: Validators discover peers via their YAML config files
+3. **Flexible Networking**: Works with any Docker network mode (bridge, host, overlay)
+
+**Verification:**
+```bash
+# Check if genesis has hardcoded IPs (should return nothing for ceremony)
+strings genesis.blob | grep -E "/ip4/.*udp.*quic" | head -5
+
+# Good (ceremony): No output
+# Bad (sui genesis): Shows IP addresses like /ip4/192.168.12.100/udp/25350/quic-v1
+```
+
 ## Deployment Script
 
 The deployment uses `deploy-192-168-12-100.sh` which:
