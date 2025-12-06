@@ -98,5 +98,9 @@ yarn-error.log*
 # Temporary files
 *.swp
 *.swo
-AManager/
-SuiRenamer/
+
+# Ignore build outputs but track source code
+AManager/bin/
+AManager/obj/
+SuiRenamer/bin/
+SuiRenamer/obj/

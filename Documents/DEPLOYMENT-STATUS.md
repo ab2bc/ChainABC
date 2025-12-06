@@ -143,6 +143,130 @@ curl -s http://127.0.0.1:21130 -X POST \
 
 1. **Genesis Mount Path**: Fixed mount from `/opt/sui/genesis` to `/genesis:ro`
 2. **P2P Seed Peers**: Updated to use Docker bridge IPs (172.17.0.x) for container-to-container communication
+
+---
+
+## Adding Post-Genesis Validators (P Nodes) to Consensus
+
+Post-genesis validators (P1-P5) are deployed and running but are **NOT** part of the active consensus committee. They must be explicitly added through the Sui staking system.
+
+### Current State
+
+| Node Type | Count | In Consensus | Notes |
+|-----------|-------|--------------|-------|
+| Genesis Validators (G1-G5) | 5 | ✅ Yes | Created in genesis.blob |
+| Post-Genesis Validators (P1-P5) | 5 | ❌ No | Running, but not staked |
+| Fullnodes (F1-F5) | 5 | N/A | Don't participate in consensus |
+
+### Why P Nodes Aren't in Consensus
+
+1. **Genesis validators are hardcoded**: Only G1-G5 are in genesis.blob
+2. **P nodes need registration**: Must call `sui_system::request_add_validator_candidate`
+3. **Staking required**: Each validator needs minimum 30M SUI staked
+4. **Epoch boundary**: Changes take effect at next epoch start
+
+### Adding a P Validator to Consensus
+
+**Prerequisites:**
+- `sui` client binary installed and configured
+- Validator account has operator capability
+- Sufficient funds (30M+ SUI for staking)
+
+**Step 1: Register as Validator Candidate**
+```bash
+sui client call \
+    --package 0x3 \
+    --module sui_system \
+    --function request_add_validator_candidate \
+    --args \
+        0x5 \
+        "<PROTOCOL_PUBLIC_KEY>" \
+        "<NETWORK_PUBLIC_KEY>" \
+        "<WORKER_PUBLIC_KEY>" \
+        "<PROOF_OF_POSSESSION>" \
+        "AQY-P1" \
+        "AQY-P1 Post-Genesis Validator" \
+        "" \
+        "" \
+        "/ip4/192.168.12.100/udp/25714/quic-v1" \
+        "/ip4/192.168.12.100/udp/25712/quic-v1" \
+        "/ip4/192.168.12.100/udp/26710/quic-v1" \
+        "/ip4/192.168.12.100/udp/26711/quic-v1" \
+        1000 \
+        0 \
+    --gas-budget 100000000
+```
+
+**Step 2: Stake Tokens**
+```bash
+sui client call \
+    --package 0x3 \
+    --module sui_system \
+    --function request_add_stake \
+    --args \
+        0x5 \
+        <COIN_OBJECT_ID> \
+        <VALIDATOR_ADDRESS> \
+    --gas-budget 100000000
+```
+
+**Step 3: Request to Join Active Set**
+```bash
+sui client call \
+    --package 0x3 \
+    --module sui_system \
+    --function request_add_validator \
+    --args 0x5 \
+    --gas-budget 100000000
+```
+
+**Step 4: Wait for Epoch Change**
+- Validator becomes active at the START of the next epoch
+- Monitor: `suix_getLatestSuiSystemState` → `pendingActiveValidatorsSize`
+
+### Helper Script
+
+Use the helper script in `AManager/scripts/add-validator-to-consensus.sh`:
+
+```bash
+# View what commands would be run
+./add-validator-to-consensus.sh --validator ./nodes/AQY-P1 --dry-run
+
+# Execute (interactive prompts)
+./add-validator-to-consensus.sh --validator ./nodes/AQY-P1 --rpc http://127.0.0.1:21130
+```
+
+### Validator Keys Location
+
+Each P node has keys in its ZIP file:
+```
+nodes/AQY-P1/AQY-P1.zip
+├── add_validator.yaml    # Contains public keys and PoP
+├── protocol.key          # BLS12-381 secret key
+├── network.key           # Ed25519 network key
+├── worker.key            # Ed25519 worker key
+├── account.key           # Ed25519 account key
+├── validator.yaml        # Node configuration
+└── info.json            # Metadata
+```
+
+### Monitoring Validator Status
+
+```bash
+# Check active validators
+curl -s http://127.0.0.1:21130 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getLatestSuiSystemState","params":[]}' | \
+  python3 -c "import sys,json; d=json.load(sys.stdin)['result']; \
+    print('Active:', len(d['activeValidators'])); \
+    print('Pending:', d['pendingActiveValidatorsSize']); \
+    print('Candidates:', d['validatorCandidatesSize'])"
+
+# Check validator candidates
+curl -s http://127.0.0.1:21130 -X POST -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_getValidatorsApy","params":[]}' | python3 -m json.tool
+```
+
+---
 3. **Port Extraction**: Correctly extracts ports from genesis.blob for each validator
 4. **Progressive Mesh Updates**: Restarts containers with updated seed-peers as more validators join
 
